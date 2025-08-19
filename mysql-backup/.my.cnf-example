@@ -1,0 +1,4 @@
+[client]
+host = mysqlX.mydevil.net
+user = mXXXX_backups
+password = STRONG_PASSWORD_HERE
