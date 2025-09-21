@@ -483,6 +483,172 @@ install_package_file() {
 }
 
 #
+# Install a package from local .pkg file
+#
+install_local_package_file() {
+    local pkg_file="$1"
+    local force="$2"
+
+    if [ ! -f "$pkg_file" ]; then
+        print_error "Package file not found: $pkg_file"
+        return 1
+    fi
+
+    # Verify it's a .pkg file
+    if ! echo "$pkg_file" | grep -q '\.pkg$'; then
+        print_error "File must have .pkg extension: $pkg_file"
+        return 1
+    fi
+
+    print_info "Installing from local file: $pkg_file"
+
+    # Create a temporary extraction directory
+    local temp_extract="$TEMP_DIR/extract_$$"
+    mkdir -p "$temp_extract"
+
+    # Extract the package to temporary directory
+    if ! tar -xf "$pkg_file" -C "$temp_extract" 2>/dev/null; then
+        print_error "Failed to extract: $pkg_file"
+        rm -rf "$temp_extract"
+        return 1
+    fi
+
+    local package_name=""
+
+    # Try to get package name from manifest first
+    if [ -f "$temp_extract/+MANIFEST" ]; then
+        package_name=$(jq -r '.name // empty' "$temp_extract/+MANIFEST" 2>/dev/null)
+        if [ -n "$package_name" ]; then
+            print_info "Detected package name from manifest: $package_name"
+        fi
+    fi
+
+    # If no manifest or no name in manifest, extract from filename
+    if [ -z "$package_name" ]; then
+        local filename
+        filename=$(basename "$pkg_file" .pkg)
+        # Remove version information (everything after last dash followed by digit)
+        package_name=$(echo "$filename" | sed 's/-[0-9].*$//')
+        if [ -n "$package_name" ]; then
+            print_info "Detected package name from filename: $package_name"
+        fi
+    fi
+
+    if [ -z "$package_name" ]; then
+        print_error "Could not determine package name from manifest or filename"
+        rm -rf "$temp_extract"
+        return 1
+    fi
+
+    # Check if package is already installed
+    if is_package_installed "$package_name"; then
+        if [ "$force" -eq 1 ]; then
+            print_warning "Package already installed: $package_name (forcing reinstall)"
+            # Remove only the main package files (not dependencies)
+            print_info "Removing existing package files: $package_name"
+            if ! remove_package_files "$package_name"; then
+                print_warning "Failed to remove some existing files for: $package_name"
+            fi
+            # Remove from installed list
+            remove_from_installed "$package_name"
+            # Remove manifest file
+            rm -f "$MANIFESTS_DIR/${package_name}.manifest"
+        else
+            print_warning "Package already installed: $package_name (use --force to reinstall)"
+            rm -rf "$temp_extract"
+            return 0
+        fi
+    fi
+
+    print_info "Extracting: $package_name"
+
+    # Save the manifest file for future removal
+    if [ -f "$temp_extract/+MANIFEST" ]; then
+        cp "$temp_extract/+MANIFEST" "$MANIFESTS_DIR/${package_name}.manifest"
+    fi
+
+    # Move files from usr/local/* to ~/.lilith/*
+    if [ -d "$temp_extract/usr/local" ]; then
+        # Copy files, preserving directory structure
+        (cd "$temp_extract/usr/local" && tar -cf - .) | (cd "$LILITH_DIR" && tar -xf -)
+
+        # Create symlinks for shared libraries in subdirectories
+        create_library_symlinks
+    fi
+
+    # Clean up
+    rm -rf "$temp_extract"
+
+    # Get package info from manifest for installed packages list
+    local package_fullname="$package_name"
+    local manifest_file="$MANIFESTS_DIR/${package_name}.manifest"
+    if [ -f "$manifest_file" ]; then
+        local manifest_name
+        manifest_name=$(jq -r '.name // empty' "$manifest_file" 2>/dev/null)
+        if [ -n "$manifest_name" ]; then
+            package_fullname="$manifest_name"
+        fi
+    fi
+
+    add_to_installed "$package_fullname" "$package_name"
+
+    print_success "Successfully installed from local file: $package_name"
+    return 0
+}
+
+#
+# Install a package from local .pkg file (command interface)
+#
+cmd_install_local() {
+    local pkg_file=""
+    local force=0
+
+    # Parse arguments
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        --force)
+            force=1
+            ;;
+        -h | --help)
+            print_info "Usage: lilith install-local [options] <package_file.pkg>"
+            print_info "Install a package from a local .pkg archive file."
+            print_info "Options:"
+            print_info "  --force          Force reinstall if package is already installed"
+            print_info "  -h, --help       Show this help message"
+
+            return 0
+            ;;
+        -*)
+            print_error "Unknown option: $1"
+            return 1
+            ;;
+        *)
+            pkg_file="$1"
+            ;;
+        esac
+        shift
+    done
+
+    if [ -z "$pkg_file" ]; then
+        print_error "Package file required"
+        print_info "Usage: lilith install-local [options] <package_file.pkg>"
+        print_info "Use 'lilith install-local --help' for more information"
+        return 1
+    fi
+
+    if ! init_lilith_dir; then
+        return 1
+    fi
+
+    # Install the package from local file
+    if ! install_local_package_file "$pkg_file" "$force"; then
+        return 1
+    fi
+
+    return 0
+}
+
+#
 # Install a package and its dependencies
 #
 cmd_install() {
@@ -1069,6 +1235,8 @@ COMMANDS:
     install [options] <package>   Install a package and its dependencies
                                   Options: --full-deps (install all dependencies)
                                            --no-deps (skip dependencies)
+    install-local [options] <file> Install a package from a local .pkg file
+                                  Options: --force (force reinstall if already installed)
     update <package>              Update a package to the latest version
     remove [options] <package>    Remove a package from the system
                                   Options: --force (remove even if required by others)
@@ -1158,6 +1326,14 @@ main() {
     install)
         shift
         if cmd_install "$@"; then
+            # Show environment setup instructions only after successful installation
+            print_info ""
+            show_environment_setup
+        fi
+        ;;
+    install-local)
+        shift
+        if cmd_install_local "$@"; then
             # Show environment setup instructions only after successful installation
             print_info ""
             show_environment_setup

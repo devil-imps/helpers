@@ -47,6 +47,8 @@ COMMANDS:
     install [options] <package>   Install a package and its dependencies
                                   Options: --full-deps (install all dependencies)
                                            --no-deps (skip dependencies)
+    install-local [options] <file> Install a package from a local .pkg file
+                                  Options: --force (force reinstall if already installed)
     update <package>              Update a package to the latest version
     remove [options] <package>    Remove a package from the system
                                   Options: --force (remove even if required by others)
