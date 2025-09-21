@@ -124,7 +124,7 @@ get_abi_and_repo_url() {
     }
 
     ABI="${ostype}:${osrel}:${arch}"
-    REPO_URL="https://pkg.freebsd.org/${ABI}/quarterly/All"
+    REPO_URL="https://pkg.freebsd.org/${ABI}/latest/All"
 
     # Only print ABI info once per script execution
     if [ $ABI_PRINTED -eq 0 ]; then
