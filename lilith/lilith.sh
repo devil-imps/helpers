@@ -140,16 +140,27 @@ get_abi_and_repo_url() {
 # Download and extract packagesite metadata
 #
 update_packagesite() {
-    local packagesite_url="${REPO_URL}/../packagesite.tzst"
+    local packagesite_url="${REPO_URL}/../packagesite.pkg"
+    local packagesite_file="$CACHE_DIR/packagesite.pkg"
 
     # Only print download messages once per session
     if [ $METADATA_UPDATED -eq 0 ]; then
         print_info "Downloading package metadata from: $packagesite_url"
     fi
 
-    if ! fetch -o "$PACKAGESITE_TZST" "$packagesite_url" 2>/dev/null; then
-        print_error "Failed to download packagesite.tzst"
-        return 1
+    if ! fetch -o "$packagesite_file" "$packagesite_url" 2>/dev/null; then
+        if [ $METADATA_UPDATED -eq 0 ]; then
+            print_info "packagesite.pkg not found, trying old format (packagesite.tzst)..."
+        fi
+
+        packagesite_url="${REPO_URL}/../packagesite.tzst"
+
+        if ! fetch -o "$PACKAGESITE_TZST" "$packagesite_url" 2>/dev/null; then
+            print_error "Failed to download packagesite (tried both .pkg and .tzst formats)"
+            return 1
+        fi
+
+        packagesite_file="$PACKAGESITE_TZST"
     fi
 
     # Only print extraction message once per session
@@ -157,14 +168,16 @@ update_packagesite() {
         print_info "Extracting package metadata..."
     fi
 
-    # Extract the tar archive compressed with zstd
-    # First decompress with zstd, then extract with tar
     local temp_tar="$CACHE_DIR/packagesite.tar"
 
-    if command -v "zstd" >/dev/null 2>&1; then
-        # Decompress zstd to tar
-        if ! zstd -d "$PACKAGESITE_TZST" -o "$temp_tar" 2>/dev/null; then
-            print_error "Failed to decompress packagesite.tzst with zstd"
+    if file "$packagesite_file" 2>/dev/null | grep -q "Zstandard"; then
+        if command -v "zstd" >/dev/null 2>&1; then
+            if ! zstd -d "$packagesite_file" -o "$temp_tar" 2>/dev/null; then
+                print_error "Failed to decompress packagesite metadata with zstd"
+                return 1
+            fi
+        else
+            print_error "zstd decompression tool not available"
             return 1
         fi
 
@@ -178,8 +191,10 @@ update_packagesite() {
         # Clean up temporary tar file
         rm -f "$temp_tar"
     else
-        print_error "zstd decompression tool not available"
-        return 1
+        if ! tar -xf "$packagesite_file" -C "$CACHE_DIR" 2>/dev/null; then
+            print_error "Failed to extract packagesite metadata"
+            return 1
+        fi
     fi
 
     if [ ! -f "$PACKAGESITE_FILE" ]; then
@@ -437,13 +452,18 @@ install_package_file() {
     local package_filename
     package_filename=$(basename "$package_path")
 
-    local package_url="${REPO_URL}/${package_filename}"
+    # Build URL using the full package path from metadata
+    local repo_base_url="${REPO_URL%/All}"
+    # URL-encode the tilde character (~) which may appear in package filenames
+    local encoded_path
+    encoded_path=$(echo "$package_path" | sed 's/~/%7E/g')
+    local package_url="${repo_base_url}/${encoded_path}"
     local temp_package="$TEMP_DIR/${package_filename}"
 
     print_info "Downloading: $package_name ($package_filename)"
 
     if ! fetch -o "$temp_package" "$package_url" 2>/dev/null; then
-        print_error "Failed to download: $package_filename"
+        print_error "Failed to download: $package_filename from $package_url"
         return 1
     fi
 
